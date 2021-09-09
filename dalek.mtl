@@ -1,0 +1,12 @@
+# Blender MTL File: 'dalek.blend'
+# Material Count: 1
+
+newmtl Material.001
+Ns 96.078431
+Ka 0.031250 0.026128 0.001312
+Kd 0.640000 0.246108 0.013088
+Ks 0.500000 0.433862 0.053227
+Ke 0.416000 0.159970 0.008507
+Ni 1.000000
+d 1.000000
+illum 3

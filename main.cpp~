@@ -1,0 +1,471 @@
+#include<GL/gl.h>
+#include<GL/glu.h>
+#include<GL/glut.h>
+#include<math.h>
+#include<stdio.h>
+#include<stdlib.h>
+#include<unistd.h>
+#include<thread>
+#include<vector>
+#define MAIN
+#include "game.h"
+using namespace std;
+
+int width = 1024, height = 768;
+static GLuint texName;
+int fps = 0;
+int movement_loops = 0;
+float etime_average = 0.0;
+bool invincible = true;
+float next_xpos = 0;
+float next_zpos = 0;
+bool done = false;
+bool top_mode = false;
+thread* move_thread = 0;
+
+void shutdown(){
+	done = true;
+	move_thread->join();
+	exit(0);
+}
+
+void handle_keys_down();
+
+
+float* getHeadingCoordinates(float offset){
+	float* coordinates = (float*)malloc(3 * sizeof(float)); // Sorry, we've only got 20 minutes
+	float radius = cos(elevation);
+	coordinates[0] = sin(PI+heading+offset) * radius;
+	coordinates[1] = sin(elevation);
+	coordinates[2] = sin((3*PI/2) + heading + offset) * radius;
+	return coordinates;
+}
+
+void fire(){
+	Projectile* newp = new Projectile(xpos, ypos, zpos, heading, elevation);
+	newp->cycle(50);
+	newp->time_remaining = 10000;
+	newp->velocity = 0.02;
+	objects.push_back(newp);
+}
+
+void drawTarget(){
+   glEnable(GL_TEXTURE_2D);
+   glTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_DECAL);
+   glBindTexture(GL_TEXTURE_2D, texName);
+	glColor3f(0, .8, .4);
+	glutSolidTeapot(.25);
+   glDisable(GL_TEXTURE_2D);
+}
+
+void drawAnotherTarget(){
+	glutSolidSphere(0.25, 10, 10);
+}
+
+void drawHUD() {
+	glLoadIdentity();
+	glDisable(GL_LIGHTING);
+	glDisable(GL_DEPTH_TEST);
+	glColor3f(1, 0.5, 1);
+	glOrtho(0, width, 0, height, -1.0f, 1.0f);
+	char message[100];
+	int height = 100;
+	auto printmessage = [&message, &height](){
+		glRasterPos2i(10, height);
+		for(char* i = message; *i; i++)
+			glutBitmapCharacter(GLUT_BITMAP_9_BY_15, *i);
+		height -= 20;
+	};
+	sprintf(message, "FPS: %d", fps);
+	printmessage();
+	sprintf(message, "Average etime:  %f", etime_average);
+	printmessage();
+	sprintf(message, "Objects:  %ld", objects.size());
+	printmessage();
+
+	glLoadIdentity();
+	glColor3f(1, 1, 0.5);
+	glBegin(GL_LINES);
+	glVertex3f(0, -0.1, 0);
+	glVertex3f(0, 0.1, 0);
+	glVertex3f(.1, 0, 0);
+	glVertex3f(-.1, 0, 0);
+	glEnd();
+
+	glEnable(GL_DEPTH_TEST);
+	glEnable(GL_LIGHTING);
+	
+}
+
+void drawScene() {
+	count++;
+	framecount++;
+	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+	glLoadIdentity();
+
+	gluPerspective(90, float(width)/height, .1, 1000);
+	float* lap = getHeadingCoordinates(0);
+	if(top_mode)
+		gluLookAt(xpos, ypos + 5, zpos,   xpos, ypos, zpos, 0, 0, -1);
+	else
+		gluLookAt(xpos, ypos, zpos,   xpos + lap[0], ypos + lap[1], zpos + lap[2], hit, 1-hit, hit);
+	free(lap);
+
+	glBegin(GL_QUADS);
+	for(int x = -10; x < 10; x++){
+		for(int z = -10; z < 10; z++){
+			float material_color[] = {0.2+z/50.0, 0.9, 0.2+z/50.0, 1.0};
+			glMaterialfv(GL_FRONT_AND_BACK, GL_AMBIENT_AND_DIFFUSE, material_color);
+			float material_spec_color[] = {.2+z/50.0, .9, .2+z/50.0, 1};
+			glMaterialfv(GL_FRONT_AND_BACK, GL_SPECULAR, material_spec_color);
+			glNormal3f(0, 1, 0);
+			glVertex3f(x, -1, z);			
+			glVertex3f(x+1, -1, z);			
+			glVertex3f(x+1, -1, z+1);			
+			glVertex3f(x, -1, z+1);			
+		}
+	}
+	glEnd();
+
+	objects_lock.lock();
+	for(auto &o : objects)
+		if(!o->dead)
+			o->draw();
+	objects_lock.unlock();
+	
+	drawHUD();
+	glutSwapBuffers();
+}
+
+#define SPEED 0.01
+
+void handle_keys_down(size_t etime){
+	float* lap = 0;
+	if(kstatus.forward){
+		lap = getHeadingCoordinates(0);
+		next_xpos = xpos + lap[0] * SPEED * etime;
+		next_zpos = zpos + lap[2] * SPEED * etime;
+	}
+	if(kstatus.backward){
+		lap = getHeadingCoordinates(PI);
+		next_xpos = xpos + lap[0] * SPEED * etime;
+		next_zpos = zpos + lap[2] * SPEED * etime;
+	}
+	if(kstatus.turnleft){
+		heading += (PI/320) * etime;
+	}
+	if(kstatus.turnright){
+		heading -= (PI/320) * etime;
+	}
+	if(kstatus.stepleft){
+		lap = getHeadingCoordinates(PI/2);
+		next_xpos = xpos + lap[0] * SPEED * etime;
+		next_zpos = zpos + lap[2] * SPEED * etime;
+	}
+	if(kstatus.stepright){
+		lap = getHeadingCoordinates(3*PI/2);
+		next_xpos = xpos + lap[0] * SPEED * etime;
+		next_zpos = zpos + lap[2] * SPEED * etime;
+	}
+	if(kstatus.fire){
+		fire();
+	}
+	if(lap) free(lap);
+}
+
+void handlekey(char status, unsigned char key, int x, int y){
+	if(hit) return;
+	switch(key){
+		case 'w': // forward
+			kstatus.forward = status;
+			break;
+		case 's': // backward
+			kstatus.backward = status;
+			break;
+		case 'q':
+			kstatus.turnleft = status;
+			break;
+		case 'e':
+			kstatus.turnright = status;
+			break;
+		case 'a': // left
+			kstatus.stepleft = status;
+			break;
+		case 'd': // right
+			kstatus.stepright = status;
+			break;
+		case 'x':
+			kstatus.fire = status;
+			break;
+		case 't':
+			if(status)
+				top_mode = !top_mode;
+			break;
+		case ' ':
+			if(yv < 0.01 && status)
+				yv = .02;
+			break;
+	}
+}
+
+void keyup(unsigned char key, int x, int y){
+	handlekey(0, key, x, y);
+}
+
+void keypress(unsigned char key, int x, int y){
+	switch(key) {
+		case 'i':
+			invincible = !invincible;
+			break;
+		case 27:
+			shutdown();
+		default:
+			handlekey(1, key, x, y);
+	}
+}
+
+
+#define ELMAX (PI/2 - 0.01)
+void mousemove(int x, int y){
+	int height = 1024;
+	int width = 768;
+	int dx = height/2 - x;
+	int dy = width/2 - y;
+	heading += dx/300.0;
+	elevation += dy/300.0;
+	if(elevation >= ELMAX) elevation = ELMAX;
+	if(elevation <= -ELMAX) elevation = -ELMAX;
+	if(dx || dy)
+		glutWarpPointer(height/2, width/2);
+}
+
+void mousefire(int button, int state, int x, int y){
+	printf("Button:  %d  state:  %d\n", button, state);
+	fire();
+}
+
+// Stuff we do a lot that doesn't have to do with drawing
+void movement(){
+	size_t lasttime = glutGet(GLUT_ELAPSED_TIME);
+	float last_ypos;
+	for(;;){
+		size_t etime = glutGet(GLUT_ELAPSED_TIME) - lasttime;
+		movement_loops++;
+		last_ypos = ypos;
+		ypos += yv * etime; // Because yv was in 1/60 second intervals
+		yv -= 0.00008 * etime;
+		float floor = -1;
+		handle_keys_down(etime);
+		
+		for(auto w : objects)
+			if(w->block) {
+				BlockObject* bo = dynamic_cast<BlockObject*>(w);
+				if(bo->over(xpos, zpos)) {
+					register float floorcand = bo->size_y/2 + w->y;			
+					if(floorcand < ypos+.25 && floorcand > last_ypos){
+						ypos = last_ypos;
+						yv = 0;
+					} else if(floorcand > floor && floorcand < ypos+.25)
+						floor = floorcand;
+				}
+				if(w->overlap(next_xpos, last_ypos, next_zpos, .2)){
+					char blockdir = bo->blockDirection(xpos, last_ypos, zpos, next_xpos, ypos, next_zpos, .2);
+					if(blockdir == 'x')
+						next_xpos = xpos;
+					if(blockdir == 'z')
+						next_zpos = zpos;
+				}
+			}
+
+		xpos = next_xpos;
+		zpos = next_zpos;
+		if(ypos < floor+1){
+			ypos = floor+1;
+			yv = 0;
+		}
+
+		for(GameObject *o : objects) 
+			if(!o->dead)
+				o->cycle(etime);
+
+		for(auto o : objects)
+			if(!o->dead)
+				o->collisions();
+
+		if(!invincible) {
+			GameObject* collider = radial_collision(xpos, ypos, zpos, 0.25);
+			if(collider){
+				hit = 1;			
+				float* lap = getHeadingCoordinates(PI);
+				xpos += lap[0] * SPEED * etime;
+				zpos += lap[2] * SPEED * etime;
+				free(lap);
+			}
+		}
+
+		objects_lock.lock();
+		for(GameObject *o : object_additions)
+			objects.push_back(o);
+		for(int i = 0; i < objects.size(); i++)
+			if(objects[i]->dead){
+				delete objects[i];
+				objects[i] = objects[objects.size() - 1];
+				objects.pop_back();
+			}
+		objects_lock.unlock();
+		object_additions.clear();
+
+		int loop_runtime = (glutGet(GLUT_ELAPSED_TIME) - lasttime - etime);
+		lasttime += etime;
+		if(loop_runtime < 9)
+			usleep(10000 - loop_runtime * 1000);
+		if(done)
+			break;
+	}
+	printf("Movement loop is quitting\n");
+}
+
+/*  Create checkerboard texture  */
+#define checkImageWidth 64
+#define checkImageHeight 64
+static GLubyte checkImage[checkImageHeight][checkImageWidth][4];
+
+
+void makeCheckImage(void)
+{
+   int i, j, c;
+    
+   for (i = 0; i < checkImageHeight; i++) {
+      for (j = 0; j < checkImageWidth; j++) {
+         c = ((((i&0x8)==0)^((j&0x8))==0))*255;
+         checkImage[i][j][0] = (GLubyte) c;
+         checkImage[i][j][1] = (GLubyte) c;
+         checkImage[i][j][2] = (GLubyte) c;
+         checkImage[i][j][3] = (GLubyte) 200;
+      }
+   }
+}
+
+void init(void)
+{    
+   glClearColor (0.0, 0.0, 0.0, 0.0);
+   glShadeModel(GL_FLAT);
+   glEnable(GL_DEPTH_TEST);
+
+   makeCheckImage();
+   glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+
+   glGenTextures(1, &texName);
+   glBindTexture(GL_TEXTURE_2D, texName);
+
+   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, 
+                   GL_NEAREST);
+   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, 
+                   GL_NEAREST);
+   glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, checkImageWidth, 
+                checkImageHeight, 0, GL_RGBA, GL_UNSIGNED_BYTE, 
+                checkImage);
+}
+
+void resize(int w, int h){
+	width = w;
+	height = h;
+	glViewport(0, 0, width, height);
+}
+
+int main(int argc, char ** argv) {
+	glutInit(&argc, argv);
+	glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGB | GLUT_DEPTH);
+	glutInitWindowSize(width, height);
+	glutCreateWindow("Simple OpenGL Demo");
+	glEnable(GL_DEPTH_TEST);
+	glutIdleFunc(drawScene);
+	glutIgnoreKeyRepeat(1);
+	glutKeyboardFunc(keypress);
+	glutKeyboardUpFunc(keyup);
+	glutDisplayFunc(drawScene);
+	glutReshapeFunc(resize);
+	glutPassiveMotionFunc(mousemove);
+	glutMotionFunc(mousemove);
+	glutMouseFunc(mousefire);
+	glutSetCursor(GLUT_CURSOR_NONE);
+   init();
+
+	
+	float material_color[] = {0.5, 0.5, 1.0, 1.0};
+	float material_spec_color[] = {.8, .8, 1, 1};
+	glMaterialfv(GL_FRONT_AND_BACK, GL_AMBIENT_AND_DIFFUSE, material_color);
+	glMaterialfv(GL_FRONT_AND_BACK, GL_SPECULAR, material_spec_color);
+	
+	float light0position[] = {5, 3, 0};
+	glLightfv(GL_LIGHT0, GL_POSITION, light0position);
+	
+	glEnable(GL_LIGHTING);
+	glEnable(GL_LIGHT0);
+
+	float light1color[] = {0.5, 0.5, 0.5, 1.0};
+	float light1position[] = {0, 500, 0};
+	float down[] = {0, -1, 0};
+	glLightfv(GL_LIGHT1, GL_AMBIENT_AND_DIFFUSE, light1color);
+	glLightfv(GL_LIGHT1, GL_SPECULAR, light1color);
+	glLightfv(GL_LIGHT1, GL_POSITION, light1position);
+	glLightfv(GL_LIGHT1, GL_SPOT_DIRECTION, down);
+	glLightf(GL_LIGHT1, GL_LINEAR_ATTENUATION, 5);
+	glLightf(GL_LIGHT1, GL_QUADRATIC_ATTENUATION, 1);
+	glEnable(GL_LIGHT1);
+
+
+	objects.reserve(500);
+//	objects.push_back(new SwingTarget(2, 3, 0, drawTarget));
+//	objects.push_back(new Target(20, 2, 0, drawTarget));
+//	objects.push_back(new Target(4, 0, 0, drawAnotherTarget));
+//	objects.push_back(new Target(6, 0, 0, drawTarget));
+//	objects.push_back(new Target(6, 6, 0, drawTarget));
+ 
+	objects.push_back(new SimpleGameObject(10, 0, 0, "monster1.obj", "monster1.png"));
+
+	WallType *brick_wall = new WallType("brick.jpg", material_color, material_spec_color);
+	objects.push_back(new WallTile(-6, 0, 0, .1, 2, 5, brick_wall));
+	objects.push_back(new WallTile(-4, 0, 0, .1, 2, 5, brick_wall));
+	objects.push_back(new WallTile(-5, 1.05, 0, 2.5, .1, 5, brick_wall));
+	objects.push_back(new WallTile(-5, 3, -5, 4, .3, 5, brick_wall));
+
+	for(float i = 0; i < 20; i++)
+		objects.push_back(new WallTile(-i - 6, (20 - i)/10 - 1, 0, 1, .5, 1, brick_wall));
+
+	for(float i = 0; i < 20; i++){
+		// Section at -3, 3, -5
+		float next_x = -2.5 + i;
+		float next_y = 3 + i*.2;
+		float next_z = -5;
+		objects.push_back(new WallTile(next_x, next_y-.05, next_z, 1, .3, 1, brick_wall));
+		objects.push_back(new WallTile(next_x, next_y+2.05, next_z, 1, .3, 1, brick_wall));
+		objects.push_back(new WallTile(next_x, next_y+1, next_z-0.5, 1, 2, .1, brick_wall));
+		objects.push_back(new WallTile(next_x, next_y+1, next_z+0.5, 1, 2, .1, brick_wall));
+	}
+	objects.push_back(new WallTile(-2.5 + 20 + 3, 3 + 20 * .2, -5, 7, 1, 7, brick_wall));
+	
+//	objects.push_back(new SimpleGameObject(2, 0, -1, "ball.obj", "wood.jpg"));
+
+	objects.push_back(new SquishyBall(0, 2, 0));
+
+	thread calc_fps([](){
+		for(;;){
+			sleep(1);
+			fps = framecount;
+			framecount = 0;
+			etime_average = (1000.0 / movement_loops);
+			movement_loops = 0;
+		}
+	});
+	move_thread = new thread(movement);
+	debug_output("Starting loop with %d objects\n", objects.size());
+
+	glutMainLoop();
+	return 0;
+}
+
+
+

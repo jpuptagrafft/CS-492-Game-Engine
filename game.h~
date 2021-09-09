@@ -1,0 +1,244 @@
+//#define DEBUG
+
+#ifndef GAME_H
+#define GAME_H
+
+#include<vector>
+#include<mutex>
+#include<stdarg.h>
+#include "tiny_obj_loader.h"
+using namespace std;
+
+#define CYCLEFREQ 10 // Milliseconds
+#ifdef MAIN
+#define EXTERN
+#define INIT = 0
+#else
+#define EXTERN extern
+#define INIT
+#endif
+
+#define PI 3.141592653
+
+struct Keys {
+	char forward;
+	char backward;
+	char stepright;
+	char turnright;
+	char stepleft;
+	char turnleft;
+	char fire;
+};
+
+class GameObject {
+	public:
+		float x, y, z;
+		bool dangerous = false;
+		bool dead = false;
+		bool block = false;
+
+		GameObject(float ix, float iy, float iz) : x(ix), y(iy), z(iz) {}
+		virtual void draw() = 0;
+		virtual void cycle(size_t etime) = 0;
+		virtual void collisions() = 0;
+		virtual bool overlap(float, float, float, float) = 0;
+};
+
+class LoadedObject {
+	public:
+		unsigned dl;
+		tinyobj::attrib_t attributes;
+		std::vector<tinyobj::shape_t> shapes;
+		std::vector<tinyobj::material_t> materials;
+		unsigned texname = 0;
+		
+
+		/*
+		 * Loads object in the file "filename" into video memory
+		 * Allocates a display list ID for the object
+		 */
+		LoadedObject(const char* filename);
+		LoadedObject(const char* filename, const char* texturefile);
+
+		~LoadedObject(){
+			glDeleteLists(dl, 1);
+		}
+
+		void draw();
+};
+
+class BlockObject {
+	public:
+		float size_x, size_y, size_z;
+		BlockObject(float isx, float isy, float isz) 
+			: size_x(isx), size_y(isy), size_z(isz) {}
+
+		virtual bool over(float ox, float oz) = 0;
+		virtual char blockDirection(float ox, float oy, float oz, float nx, float ny, float nz, float margin) = 0;
+};
+
+EXTERN struct Keys kstatus;
+EXTERN vector<GameObject*> objects;
+EXTERN vector<LoadedObject*> models;
+EXTERN vector<GameObject*> object_additions;
+EXTERN mutex objects_lock;
+EXTERN float xpos INIT, ypos INIT, zpos INIT, heading INIT, elevation INIT, yv INIT;
+EXTERN int count INIT, framecount INIT, hit INIT;
+
+/* We're not going to do this right now
+EXTERN projectiles[1000];
+EXTERN proj_count = 0;
+
+void fire_projectile(.....){
+	if(proj_count == 1000)
+		either don't fire or reallocate more space
+	projectiles[proj_count].Projectile(.....);
+	object_additions.push_back(&projectiles[proj_count]);
+	proj_count++;
+}
+
+void delete_projectile(i){
+	 projectiles[i] = projectiles[proj_count] 
+	 proj_count--;
+}
+*/
+
+#ifdef DEBUG
+inline void debug_output(char* format, ... ) {
+	va_list arguments;                     
+   va_start ( arguments, format );
+	vprintf(format, arguments);
+}
+#else
+inline void debug_output(char* format, ... ){
+}
+#endif
+
+inline float move_x(float heading, float start, float distance, float elevation){
+	return start + sin(PI+heading) * distance * cos(elevation);
+}
+inline float move_y(float elevation, float start, float distance){
+	return start + sin(elevation) * distance;
+}
+inline float move_z(float heading, float start, float distance, float elevation){
+	return start + sin((3*PI/2) + heading) * distance * cos(elevation);
+}
+inline float proximity(float x1, float x2, float y1, float y2, float z1, float z2){
+	return sqrt(pow(x1-x2, 2) + pow(y1-y2, 2) + pow(z1-z2, 2));
+}
+GameObject* radial_collision(GameObject* o, float radius);
+GameObject* radial_collision(float x, float y, float z, float radius, GameObject* o = (GameObject*)0);
+unsigned load_texture(const char* texfile);
+
+class Projectile : public GameObject {
+	public:
+		float heading, elevation;
+		int time_remaining = 3000;
+		float velocity = 0.01;
+
+		Projectile(float ix, float iy, float iz, float ih, float ie) 
+			: GameObject(ix, iy, iz), heading(ih), elevation(ie) {
+			dangerous = true;
+		}
+		void draw() override;
+		void cycle(size_t etime);
+		void collisions() ;
+		inline bool overlap(float ox, float oy, float oz, float margin) {
+			return proximity(x, ox, y, oy, z, oz) < 0.1 + margin;
+		}
+};
+
+class Frag {
+	public:
+		float x = 0, y = 0, z = 0;
+		float ty;
+		float xv, yv, zv;
+
+		Frag(float ity) : ty(ity) {
+			xv = random() % 100 / 2000.0 - 0.025;
+			yv = random() % 100 / 400.0 - 0.01;
+			zv = random() % 100 / 2000.0 - 0.025;
+		}
+		void draw();
+		void move();
+};
+
+class Target : public GameObject {
+	public:
+		float size;
+		int nFragments = 20;
+		float radius = 0.25;
+		int destroyed_count = 0;
+		vector<Frag> fragments;
+		void (*drawCallback)();
+		bool shootback = true;
+
+		Target(float ix, float iy, float iz, void (*id)()) 
+			: GameObject(ix, iy, iz), drawCallback(id) {}
+
+		void draw();
+		void cycle(size_t etime);
+		void collisions();
+		inline bool overlap(float ox, float oy, float oz, float margin) {
+			return proximity(x, ox, y, oy, z, oz) < 0.25 + margin;
+		}
+};
+
+class SwingTarget : public Target {
+	public:
+		float base_x, base_y;
+		float angle = 0.1, shift = 0.01;
+		SwingTarget(float ix, float iy, float iz, void (*id)())
+				: Target(ix, iy, iz, id), base_x(ix), base_y(iy) {}
+		void cycle(size_t etime) override;
+		void draw() override;
+};
+
+class SimpleGameObject : public GameObject {
+	public:
+		LoadedObject model;
+
+		SimpleGameObject(float ix, float iy, float iz, const char* objfile, const char* texfile = 0);
+		void draw() override;
+		void cycle(size_t etime) override {};
+		void collisions() override {};
+		bool overlap(float ox, float oy, float oz, float margin) {return false;};
+};
+
+class WallType {
+	public:
+		unsigned texname = 0;
+		float material[4];
+		float spec[4];
+		unsigned dl;
+		
+		WallType(const char* texfile, float* im, float* is);
+		void draw(float, float, float, float, float, float);	
+};
+
+class WallTile : public GameObject, public BlockObject {
+	public:
+		WallType *wt;
+		WallTile(float ix, float iy, float iz, float isx, float isy, float isz, WallType* iwt) :
+			GameObject(ix, iy, iz), BlockObject(isx, isy, isz) {wt = iwt; block = true;}
+
+		void draw();
+		void cycle(size_t etime) {};
+		void collisions() {};
+		bool overlap(float, float, float, float);
+		bool over(float, float) override;
+		char blockDirection(float, float, float, float, float, float, float);
+};
+
+class SquishyBall : public GameObject {
+	public:
+		float yvel = 0;
+		SquishyBall(float ix, float iy, float iz)
+			: GameObject(ix, iy, iz) {};
+		void draw();
+		void cycle(size_t etime);
+		void collisions() {};
+		bool overlap(float, float, float, float) {};
+};
+
+#endif

@@ -1,0 +1,227 @@
+#include<GL/gl.h>
+#include<GL/glu.h>
+#include<GL/glut.h>
+#include<SOIL/SOIL.h>
+#include<math.h>
+#include<stdio.h>
+#include<stdlib.h>
+#include<unistd.h>
+#include<thread>
+#include<vector>
+#include "game.h"
+
+GameObject* radial_collision(float x, float y, float z, float radius, GameObject* o) {
+	for(auto proj : objects) {
+		if(proj == o || !proj->dangerous || proj->dead)
+			continue;
+		if(proximity(x, proj->x, y, proj->y, z, proj->z) < radius)
+			return proj;
+	}
+	return 0;
+}
+
+inline GameObject* radial_collision(GameObject* o, float radius){
+	radial_collision(o->x, o->y, o->z, radius, o);
+}
+
+unsigned load_texture(const char* texfile){
+	int width, height;
+	unsigned texname;
+	unsigned char* image = SOIL_load_image(texfile, &width, &height, 0, SOIL_LOAD_RGB);
+
+   glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+
+   glGenTextures(1, &texname);
+   glBindTexture(GL_TEXTURE_2D, texname);
+
+   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+   glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, image);
+	return texname;
+}
+
+void Projectile::draw(){
+	float material_color[] = {1.0, 0.6, 0.6, 1.0};
+	glMaterialfv(GL_FRONT_AND_BACK, GL_AMBIENT_AND_DIFFUSE, material_color);
+	float material_spec_color[] = {1.0, 0.6, 0.6, 1.0};
+	glMaterialfv(GL_FRONT_AND_BACK, GL_SPECULAR, material_spec_color);
+	glPushMatrix();
+	glTranslatef(x, y, z);
+	glutSolidSphere(0.1, 10, 10);
+	glPopMatrix();
+}
+
+void Projectile::cycle(size_t etime){
+	if(velocity > 0){
+		x = move_x(heading, x, velocity * etime, elevation); 
+		y = move_y(elevation, y, velocity * etime);
+		if(y < -1)
+			elevation = -elevation;
+		z = move_z(heading, z, velocity * etime, elevation);
+	}
+	time_remaining -= etime;
+	if(time_remaining <= 0) 
+		dead = true;
+}
+
+void Projectile::collisions(){
+	float next_x = move_x(heading, x, velocity * 10, elevation);
+	float next_y = move_y(elevation, y, velocity * 10);
+	float next_z = move_z(heading, z, velocity * 10, elevation);
+	for(auto w : objects)
+		if(w->block)
+			if(w->overlap(next_x, next_y, next_z, 0)) {
+				velocity = -1;
+				dangerous = false;
+			}
+}
+
+void Frag::draw(){
+	float material_color[] = {0.5, 0.5, 1.0, 1.0};
+	glMaterialfv(GL_FRONT_AND_BACK, GL_AMBIENT_AND_DIFFUSE, material_color);
+	float material_spec_color[] = {.8, .8, 1, 1};
+	glMaterialfv(GL_FRONT_AND_BACK, GL_SPECULAR, material_spec_color);
+
+	glTranslatef(x, y, z);
+	glutSolidSphere(0.1, 8, 8);
+	glTranslatef(-z, -y, -z);
+}
+
+void Frag::move(){
+	yv -= 0.005;
+	x += xv;
+	y += yv;
+	z += zv;
+
+	if(y < -1 - ty){
+		yv = 0.8 * -yv;
+		xv = 0.8 * xv;
+		zv = 0.8 * zv;
+	}	
+}
+
+void Target::draw(){
+	glPushMatrix();
+	glTranslatef(x, y, z);
+	if(destroyed_count)
+		for(auto & element : fragments)
+			element.draw();
+	else drawCallback();
+	glPopMatrix();
+}
+
+void Target::cycle(size_t etime) {
+	if(destroyed_count){				
+		if(destroyed_count == 1)
+			for(int i = 0; i < nFragments; i++)
+				fragments.push_back(Frag(y));
+		for(auto & element : fragments)
+			element.move();
+		destroyed_count++;
+	}
+	if(!destroyed_count){
+		if(random() % 50 != 42)
+			goto no_fire;
+		// Shoot from x, y, z to xpos, ypos, zpos
+		if(fabs(x - xpos) <  0.01)
+			goto no_fire;
+		if(fabs(z - zpos) <  0.01)
+			goto no_fire;
+		
+		float dx = xpos - x, dz = zpos - z;
+		float p_heading = atanf(fabs(dz) / fabs(dx));
+		if(dx > 0 && dz > 0) // Quadrant 1
+			p_heading = PI/2 - p_heading + PI;
+		else if(dx < 0 && dz > 0) // Quadrant 2
+			p_heading = p_heading + PI/2;
+		else if(dx < 0 && dz < 0) // Quadrant 3
+			p_heading = 3*PI/2 - p_heading + PI;
+		else if(dx > 0 && dz < 0) // Quadrant 4
+			p_heading = p_heading + 3*PI/2; 
+		else goto no_fire;
+		float r = sqrt(pow(dz, 2) + pow(dx, 2));
+		float dy = ypos - y;
+		float p_elevation = 0;
+		if(fabs(dy) > 0.01){
+			p_elevation = atanf(fabs(dy) / r) * ((dy < 0)? -1:1);
+		}
+		Projectile* newp = new Projectile(x, y, z, p_heading, p_elevation);
+		newp->cycle(100);
+		object_additions.push_back(newp);
+	}
+no_fire:
+	if(destroyed_count >= 420) 
+		dead = true;
+}
+
+void Target::collisions(){
+	GameObject* other = radial_collision(this, 0.25);
+	if(other && destroyed_count == 0)
+		destroyed_count = 1;
+}
+
+void SwingTarget::cycle(size_t etime){
+	Target::cycle(etime);
+	if(destroyed_count) return;
+	angle += shift;
+	if(angle < PI/4)
+		shift += 0.001;
+	if(angle > PI/4)
+		shift -= 0.001;
+	float effective_angle = angle - PI/4 - PI/2;
+	float dx = 2 * cosf(effective_angle);
+	float dy = 2 * sinf(effective_angle);
+	x = base_x + dx;
+	y = base_y + dy;
+}
+
+void SwingTarget::draw(){
+	Target::draw();
+	if(!destroyed_count){
+		glBegin(GL_LINES);
+		glVertex3f(x, y, z);
+		glVertex3f(base_x, base_y, z);
+		glEnd();
+	}
+}
+
+void SquishyBall::draw(){
+	glPushMatrix();
+	if(animation_time >= 0){
+		// 0:  Looks normal
+		// 1:  Looks normal
+		// 0.5:  Maximum flat
+		register float a = fabs(0.5 - animation_time);
+		register float d = cos(a * 3);
+		register float w = 1.0 + d;
+		register float h = 1.0 - 0.5 * d;
+		glScalef(w, h, w);
+		glTranslatef(x, y - d, z);
+	} else {
+		glTranslatef(x, y, z);
+
+	}
+	glutSolidSphere(.5, 10, 10);
+	glPopMatrix();
+
+}
+
+void SquishyBall::cycle(size_t etime){
+	if(animation_time >= 0){
+		animation_time += 0.01;
+		if(animation_time > 1.0)
+			animation_time = -1;
+		return;
+	}
+	y += yvel;
+	yvel -= 0.001;
+	if(y <= -0.5){
+		yvel = -yvel;
+		y = -0.5;
+		animation_time = 0;
+	}
+}
+
+
